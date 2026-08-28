@@ -28,14 +28,20 @@
 
 ## Day 2 — Layer 1 Agents + Strategist
 
-- [ ] `agents/market_agent.py` (DeepSeek via OpenRouter) — returns fixed schema, tested on real data
-- [ ] `agents/volatility_agent.py` (DeepSeek via OpenRouter) — returns fixed schema, tested on real data
-- [ ] `agents/options_agent.py` (Qwen3-Coder via OpenRouter) — returns fixed schema, tested on real data
-- [ ] `agents/portfolio_agent.py` (GLM-4.5-Air via OpenRouter) — returns fixed schema, tested on real data
-- [ ] `agents/strategist.py` (Gemini via Google AI Studio) — synthesizes all four outputs into one proposal, considers 1-2 alternatives, can output NO_TRADE
-- [ ] Full Layer 1 → Strategist chain tested on 2-3 real market snapshots, outputs sanity-checked by hand
+- [x] `agents/market_agent.py` (DeepSeek via OpenRouter) — returns fixed schema, tested on real data
+- [x] `agents/volatility_agent.py` (DeepSeek via OpenRouter) — returns fixed schema, tested on real data
+- [x] `agents/options_agent.py` (Qwen3-Coder via OpenRouter) — returns fixed schema, tested on real data
+- [x] `agents/portfolio_agent.py` (GLM-4.5-Air via OpenRouter) — returns fixed schema, tested on real data
+- [x] `agents/strategist.py` (Gemini via Google AI Studio) — synthesizes all four outputs into one proposal, considers 1-2 alternatives, can output NO_TRADE
+- [x] Full Layer 1 → Strategist chain tested on 2-3 real market snapshots, outputs sanity-checked by hand
 
 **Day 2 notes:**
+- All four Layer-1 agents + Strategist implemented with LOCKED model bindings (DeepSeek-V3 / Qwen3-Coder / GLM-4.5-Air via OpenRouter; gemini-3.6-flash via Google AI Studio). Shared `agents/llm_client.py` enforces: JSON-only parsing, exact schema match against `schemas/agent_schemas.py`, semantic validators (spread-type scope, leg geometry, alternatives/reasons-not-to-trade present), retry max 2 — a third consecutive schema failure raises `AgentSchemaError` and HALTS (per rule: never loosen schema).
+- Each agent gets a deterministic data snapshot (price/vol/option-surface/account built in code, no LLM); the LLM only interprets. Option snapshots chunked 100 symbols/request (Alpaca limit).
+- Real-data tests all passed on first schema-valid output: SPY market (trending_up/bullish, conf 0.7), SPY vol (low regime, IV cheap, conf 0.9), SPY options (real bull put 760/750 w/ actual quotes + Greeks, conf 0.85), portfolio (correctly detected the live Day-1 SPY put position and flagged conflict).
+- NO_TRADE test (fake disagreeing signals + do_not_proceed portfolio): strategist returned literal "NO_TRADE" — passed. Also NO_TRADE on real SPY & NVDA & MSFT snapshots (portfolio conflict / duplicate exposure) — refusing to trade is the correct behavior given the open Day-1 SPY position.
+- Full chain AAPL (real snapshot): complete trade proposal — bull put 315/310 exp 260904, credit ~$1.11, max loss $389, alternatives considered (bear_call_spread, naked_short_put — scope-rejected), entry/exit/invalidation conditions, honest reasons_not_to_trade (low volume conviction, SMA20<SMA50, 7-DTE gamma). Confidence 0.78. Ready for Mentor review in Day 3.
+- Infra fixes: gemini-2.5-flash is 404 for new keys → gemini-3.6-flash; 3.6-flash is a thinking model so maxOutputTokens raised 2048→8192 (2048 truncates mid-thought and the call stalls); hard 150s wall-clock deadline per LLM call via daemon thread (proxy keepalives defeat socket read-timeouts); transport errors now count as attempts and are retried.
 
 ---
 
@@ -77,6 +83,6 @@
 
 ## Overall Status
 
-**Current phase:** _(update this line each session)_
-**Blockers:** _(update this line each session)_
-**Confidence in Day-4 demo readiness:** _(update this line each session — Low / Medium / High)_
+**Current phase:** Day 2 complete — Layer 1 agents + Strategist implemented and validated on real data. Next: Day 3 (Mentor).
+**Blockers:** none. (Google AI Studio key added by user mid-session; gemini-2.5-flash deprecated → using gemini-3.6-flash.)
+**Confidence in Day-4 demo readiness:** Medium — full decision pipeline works end-to-end on real data; Mentor/risk wiring still pending.
