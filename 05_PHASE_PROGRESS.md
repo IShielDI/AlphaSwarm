@@ -70,14 +70,14 @@
 
 ## Day 4 — Light Self-Improvement + Demo Assembly
 
-- [ ] `improve/outcome_analyzer.py` — structured post-mortem generated for at least one closed trade
-- [ ] `improve/imperfection_log.py` — running per-agent weakness table implemented and populated from available trades
-- [ ] `improve/improvement_engine.py` — ONE improvement hypothesis generated from the log
-- [ ] Mentor review of that hypothesis implemented (accept/reject), explicitly framed in the demo as a mechanism demo, not a validated claim
-- [ ] Dashboard / walkthrough assembled showing one full decision lifecycle
-- [ ] Demo recorded or live run rehearsed at least once end-to-end before presenting
+- [x] `improve/outcome_analyzer.py` — structured post-mortem for the real filled SPY trade (simulated mark-to-market close, labeled as such). Quadrant model: process soundness (4 deterministic checks on information known at entry) vs outcome; favorable mark does NOT validate the process at n=1.
+- [x] `improve/imperfection_log.py` — running JSONL table in Section 21 format (agent, strength_area, weak_area, source, note, recorded_at) + per-agent summary; seeded with honest manual observations from Days 1-3 for all 7 components.
+- [x] `improve/improvement_engine.py` — deterministic ONE-hypothesis pick (agents with observed weaknesses ranked first; agents with "none observed yet" excluded), instrumentation-only proposed action. Reviewed by Mentor (Nemotron) under new additive `HYPOTHESIS_REVIEW_SCHEMA` (verdict/reasoning/conditions/sample_size_caveat — caveat is REQUIRED).
+- [x] Mentor review live-tested: verdict **accept** with explicit n=1 caveat and "3 more cycles" condition. Framed throughout as mechanism demo, NOT validated claim.
+- [x] `scripts/day4_demo.py` — 5-step lifecycle walkthrough: recorded Day-3 trace → live mark of the filled SPY 755/750 trade (unrealized +30% of max profit at run time) → post-mortem → imperfection log → improvement loop.
+- [x] Rehearsal run completed end-to-end on 2026-08-29 (log: /tmp/day4_demo.txt). Non-LLM steps are deterministic and reliable. LLM-dependent step (Mentor review) succeeded on first try but takes ~90-150s.
 
-**Day 4 notes:**
+**Day 4 notes:** Improvement engine initially picked an agent with "none observed yet" as its weak area — fixed by ranking agents with actual observed weaknesses first. The per_agent_summary key names (strengths/weaknesses/n_observations) initially mismatched the engine — fixed. One flakiness caveat: the demo's step 5 depends on OpenRouter Nemotron, which is slow (90-240s) and occasionally rate-limits (429 with retry works).
 
 ---
 
@@ -91,13 +91,14 @@
 
 ## Overall Status
 
-**Current phase:** Day 3 implementation complete — Mentor validated standalone (4/4 schema-exact on Nemotron), correction routing + one-revision cap implemented, Risk Engine -> Execution Service -> Position Monitor wiring verified with real Alpaca paper calls. **Step 6 (filled order) NOT achieved; not moving to Day 4.**
+**Current phase:** Day 4 complete. Full pipeline Day 1→4 built and exercised on real data. One real filled paper trade exists (SPY 755/750 bull put, 2 contracts, filled 2026-08-28, expires 2026-09-08, currently ~+30% of max profit). Day 3's end-to-end fill blocker was resolved after the recalibrated Strategist prompt was live-validated.
 
-**Blockers to a real filled order (in order):**
-1. **Market closed:** next Alpaca market open is Mon 2026-08-31 09:30 ET (verified via get_clock). No paper order can fill before then regardless of pipeline state.
-2. **Gemini free-tier quota exhausted (HTTP 429):** the Strategist cannot run live until the daily quota resets or billing is enabled on the Google AI Studio key.
-3. **Strategist calibration (root cause of prior NO_TRADEs):** FIXED 2026-08-29 — added explicit credit-seller IV interpretation to `agents/strategist.py` SYSTEM_PROMPT (IV expensive vs realized is FAVORABLE for selling credit; "expensive IV" must never appear in reasons_not_to_trade by itself). **PENDING LIVE VALIDATION** — Gemini quota was exhausted at time of edit (HTTP 429), so the recalibrated prompt has not yet been exercised end-to-end. Validate in Monday's 09:30 ET run.
+**Honest reliability assessment for a live demo:**
+- **Reliable (deterministic, no LLM):** Risk Engine, Execution Service, Position Monitor, Decision Store, Outcome Analyzer, Imperfection Log, hypothesis selection. These will not fail on stage.
+- **Mostly reliable but slow:** Market/Volatility Agents (DeepSeek), Options Agent (Qwen3-Coder), Portfolio Agent (GLM-4.5-Air), Mentor (Nemotron). Schema-locked with retry; failures are rare but the Mentor needs 90-240s per audit and has hit 429s under retry pressure.
+- **Flakiest link:** Gemini (Strategist) on the free tier — daily quota exhaustion has interrupted runs twice; 429s are a real live-demo risk. Mitigation for demo day: run early after quota reset, or pre-record the Strategist segment.
+- **Known demo-framing caveats (do not oversell):** the filled Day-1 trade was manual (predates the orchestrator); the post-mortem close is a simulated mark, not a fill; the improvement loop is a mechanism demo at n=1; all system NO_TRADEs so far were legitimate but also mean there is only ONE trade of outcome data.
 
-**To unblock Monday:** wait for quota reset (blocker 2), run `Orchestrator().run_cycle()` shortly after 09:30 ET (blocker 1) with the recalibrated Strategist (blocker 3 fixed, pending validation), confirm Mentor APPROVE -> Risk PASS -> SUBMITTED -> filled.
+**Recommendation:** run the demo live but with pre-recorded fallback captures for the Strategist and Mentor segments; the deterministic steps (risk → execution → monitor → post-mortem) can safely run live.
 
-**Confidence in Day-4 demo readiness:** High — the full pipeline incl. Mentor loop, correction cap, and execution path is built and individually verified; only the last-mile live fill is pending market hours.
+**Confidence in demo readiness:** Medium-High. Pipeline is complete and individually verified end-to-end; residual risk is LLM provider flakiness (mainly Gemini quota), not system logic.

@@ -98,6 +98,17 @@ MENTOR_SCHEMA: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Registry: agent name -> required top-level fields.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Improvement Engine hypothesis review (Day 4, additive -- existing locked
+# schemas above are untouched). The Mentor reviews ONE improvement hypothesis.
+# ---------------------------------------------------------------------------
+HYPOTHESIS_REVIEW_SCHEMA: List[str] = [
+    "verdict",              # "accept" | "reject"
+    "reasoning",
+    "conditions",           # what must be true before acting on the hypothesis
+    "sample_size_caveat",   # reviewer must state the n-is-too-small limitation
+]
+
 AGENT_SCHEMAS: Dict[str, List[str]] = {
     "market_agent": MARKET_SCHEMA,
     "volatility_agent": VOLATILITY_SCHEMA,
@@ -105,6 +116,7 @@ AGENT_SCHEMAS: Dict[str, List[str]] = {
     "portfolio_agent": PORTFOLIO_SCHEMA,
     "strategist": STRATEGIST_SCHEMA,
     "mentor": list(MENTOR_SCHEMA.keys()),
+    "hypothesis_review": HYPOTHESIS_REVIEW_SCHEMA,
 }
 
 
