@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Callable, List, Optional
 
 import requests
@@ -37,6 +38,7 @@ GEMINI_URL_TEMPLATE = (
 MODEL_DEEPSEEK = "deepseek/deepseek-v4-flash"
 MODEL_QWEN3_CODER = "qwen/qwen3-coder"
 MODEL_GLM45_AIR = "z-ai/glm-4.5-air"
+MODEL_NEMOTRON = "nvidia/nemotron-3-super-120b-a12b"  # Mentor (TRD Section 2, locked)
 MODEL_GEMINI_FLASH = "gemini-3.6-flash"  # 2.5-flash is 404 for new keys (Aug 2026)
 
 MAX_SCHEMA_ATTEMPTS = 2  # Agent Rules Section 5: halt after 2 consecutive failures
@@ -172,7 +174,10 @@ def run_structured_agent(
             output = extract_json(raw)
         except ValueError as e:
             errors_per_attempt.append([f"unparseable JSON: {e}"])
-            logger.warning("%s attempt %d: unparseable JSON", agent, attempt)
+            logger.warning(
+                "%s attempt %d: unparseable JSON; raw=%r",
+                agent, attempt, (raw or "")[:800],
+            )
             continue
 
         errors = validate_exact_fields(agent, output)
@@ -199,7 +204,7 @@ class _ChatDeadline:
     in wall time. Daemon so an abandoned hung thread can't block exit.
     """
 
-    def __init__(self, seconds: int = 150):
+    def __init__(self, seconds: int = 240):
         self._seconds = seconds
 
     def run(self, fn, *args, **kwargs):
@@ -247,12 +252,39 @@ def _openrouter_chat(model: str, system_prompt: str, user_prompt: str, temperatu
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temperature,
-                "max_tokens": 2000,
+                "max_tokens": 8000,
             },
             timeout=(10, 90),
         )
     except requests.RequestException as e:
         raise LLMError(f"OpenRouter transport failure: {e}") from e
+    # Transient upstream rate limits (429) are common on shared free-tier
+    # providers -- back off and retry within the same schema attempt.
+    for wait in (20, 40):
+        if resp.status_code != 429:
+            break
+        logger.warning("OpenRouter 429 for %s; backing off %ss", model, wait)
+        time.sleep(wait)
+        try:
+            resp = requests.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": 8000,
+                },
+                timeout=(10, 90),
+            )
+        except requests.RequestException as e:
+            raise LLMError(f"OpenRouter transport failure: {e}") from e
     if resp.status_code != 200:
         raise LLMError(f"OpenRouter HTTP {resp.status_code}: {resp.text[:300]}")
     data = resp.json()

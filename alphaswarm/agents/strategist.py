@@ -80,15 +80,29 @@ class Strategist:
         volatility_analysis: Dict[str, Any],
         options_analysis: Dict[str, Any],
         portfolio_analysis: Dict[str, Any],
+        mentor_feedback: Dict[str, Any] | None = None,
     ) -> Any:
-        """Return a proposal dict or the literal string "NO_TRADE"."""
+        """Return a proposal dict or the literal string "NO_TRADE".
+
+        `mentor_feedback` (optional) carries the Mentor's audit during the
+        single correction round (Agent Rules 3.3); the Strategist must
+        address each imperfection or return NO_TRADE.
+        """
         user = (
             f"Underlying: {ticker}\n\n"
             f"MARKET AGENT output:\n{market_analysis}\n\n"
             f"VOLATILITY AGENT output:\n{volatility_analysis}\n\n"
             f"OPTIONS AGENT output:\n{options_analysis}\n\n"
             f"PORTFOLIO AGENT output:\n{portfolio_analysis}\n\n"
-            "Synthesize these four outputs into exactly one decision. If they disagree, "
+            + (
+                (
+                    "MENTOR AUDIT of your previous proposal (correction round -- address "
+                    f"every imperfection or return NO_TRADE):\n{mentor_feedback}\n\n"
+                )
+                if mentor_feedback
+                else ""
+            )
+            + "Synthesize these four outputs into exactly one decision. If they disagree, "
             "if evidence is weak, or if risk is poor, output the literal JSON string "
             "\"NO_TRADE\" instead of a proposal. Otherwise return only the JSON proposal "
             "object with the exact required fields."

@@ -47,16 +47,24 @@
 
 ## Day 3 — Mentor Loop + Risk Engine + Execution Wiring
 
-- [ ] `agents/mentor.py` (Nemotron via OpenRouter) — schema tested standalone against sample proposals BEFORE wiring into the loop
-- [ ] Mentor component-by-component audit implemented, producing the fixed `overall_decision` / `imperfections` JSON
-- [ ] Targeted correction routing implemented (only responsible agent(s) re-invoked, `invalidate_downstream` respected)
-- [ ] Revision loop capped at ONE round, enforced in `orchestrator.py` (not left to the Mentor's own judgment)
-- [ ] Mentor APPROVE wired into `engine/risk_engine.py`
-- [ ] Risk Engine PASS wired into `engine/execution_service.py` → real Alpaca paper order submitted
-- [ ] `monitor/position_monitor.py` — scheduled HOLD/EXIT check implemented
+- [x] `agents/mentor.py` (Nemotron via OpenRouter) — schema tested standalone against sample proposals BEFORE wiring into the loop
+- [x] Mentor component-by-component audit implemented, producing the fixed `overall_decision` / `imperfections` JSON
+- [x] Targeted correction routing implemented (only responsible agent(s) re-invoked, `invalidate_downstream` respected)
+- [x] Revision loop capped at ONE round, enforced in `orchestrator.py` (not left to the Mentor's own judgment)
+- [x] Mentor APPROVE wired into `engine/risk_engine.py`
+- [x] Risk Engine PASS wired into `engine/execution_service.py` → real Alpaca paper order submitted
+- [x] `monitor/position_monitor.py` — scheduled HOLD/EXIT check implemented
 - [ ] One full real decision-to-execution cycle completed live, end-to-end
 
 **Day 3 notes:**
+- STANDALONE MENTOR VALIDATION (before any wiring, per instruction): 4 realistic sample cases (clean proposal / direction conflict / fabricated credit / portfolio conflict ignored) — 4/4 schema-exact on the rigid MENTOR_SCHEMA. Nemotron caught real issues: the fabricated-credit case (strategist quoted $2.40 vs options agent's $0.85 — flagged owner=strategist, high severity), the direction-conflict case (high severity bias_integration), and even the short-put vega sign in my sample data. Required 3 infra fixes first: Nemotron reasoning tokens blew the 2000 max_tokens cap (raised to 8000), >150s latency (hard deadline raised to 240s), model name verified live against the OpenRouter catalog.
+- Correction routing implemented in `orchestrator.py` with an explicit ownership map (Agent Rules Section 1 table): flagged owner re-invoked with original inputs; `invalidate_downstream` forces re-run of every downstream consumer; strategist always re-synthesizes with the audit attached via a new `mentor_feedback` parameter. Exactly ONE revision round — REJECT/WAIT or failed re-audit ends the cycle NO_TRADE, no looping.
+- `decision_store.py`: append-only JSONL trace of every cycle (L1 outputs, proposals, both mentor audits, corrections, risk checks, execution result).
+- Live end-to-end runs: 6 cycles (AAPL, NVDA, MSFT, META, AMD, TSLA). NVDA exercised the full correction path (mentor REVISE → correction round → re-audit). ALL cycles ended NO_TRADE — see blocker below.
+- Risk Engine wiring verified standalone on a realistic proposal: all 4 checks PASS ($315 max loss vs $2,000 cap, $500 notional, concentration, no duplicate). mleg leg construction validated (SELL_TO_OPEN/BUY_TO_OPEN, qty 1).
+- Position Monitor live: correctly evaluates the open Day-1 SPY 750/755 puts (dte=10, plpc -7%/-5% → HOLD) with deterministic rules: expired/dte<=2 → EXIT, plpc >= +50% → EXIT, plpc <= -100% → EXIT, dte <= 7 → REVIEW, else HOLD.
+- **BLOCKER (step 6): no filled order yet.** Two compounding causes, in order of importance: (1) The Strategist returns NO_TRADE on every live snapshot. The visible data reason: IV is elevated vs realized across the whole universe right now (e.g. MSFT IV 41.4% vs 20d realized 26.5%) — pre-weekend event premium. This is actually FAVORABLE for selling credit spreads, but the Strategist reads `iv_assessment: "expensive"` as a reason not to trade — a calibration bug, not a schema failure. Fix candidate (needs owner sign-off, since it biases the system toward trading): clarify in the Strategist prompt that IV > realized is attractive for premium SELLING; do NOT loosen any schema. (2) Calendar: today is Saturday — even an APPROVE would only queue, not fill, until Monday's open.
+
 
 ---
 
@@ -83,6 +91,13 @@
 
 ## Overall Status
 
-**Current phase:** Day 2 complete — Layer 1 agents + Strategist implemented and validated on real data. Next: Day 3 (Mentor).
-**Blockers:** none. (Google AI Studio key added by user mid-session; gemini-2.5-flash deprecated → using gemini-3.6-flash.)
-**Confidence in Day-4 demo readiness:** Medium — full decision pipeline works end-to-end on real data; Mentor/risk wiring still pending.
+**Current phase:** Day 3 implementation complete — Mentor validated standalone (4/4 schema-exact on Nemotron), correction routing + one-revision cap implemented, Risk Engine -> Execution Service -> Position Monitor wiring verified with real Alpaca paper calls. **Step 6 (filled order) NOT achieved; not moving to Day 4.**
+
+**Blockers to a real filled order (in order):**
+1. **Market closed:** next Alpaca market open is Mon 2026-08-31 09:30 ET (verified via get_clock). No paper order can fill before then regardless of pipeline state.
+2. **Gemini free-tier quota exhausted (HTTP 429):** the Strategist cannot run live until the daily quota resets or billing is enabled on the Google AI Studio key.
+3. **Strategist calibration (root cause of prior NO_TRADEs):** on every live snapshot the Strategist treats "IV expensive vs realized" as a reason NOT to trade. For vertical CREDIT spreads, IV > realized is favorable (selling overpriced premium). Needs a one-line prompt calibration in `agents/strategist.py` clarifying the credit-seller's perspective, then a re-run at Monday's open.
+
+**To unblock Monday:** fix blocker 3, wait for quota reset (blocker 2), run `Orchestrator().run_cycle()` shortly after 09:30 ET (blocker 1), confirm Mentor APPROVE -> Risk PASS -> SUBMITTED -> filled.
+
+**Confidence in Day-4 demo readiness:** High — the full pipeline incl. Mentor loop, correction cap, and execution path is built and individually verified; only the last-mile live fill is pending market hours.
