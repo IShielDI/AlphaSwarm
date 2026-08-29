@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AlphaSwarm — Operations Console</title>
+  <meta name="description" content="AlphaSwarm operations console and office visualization." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app-layout">
+    
+    <!-- TOP BAR -->
+    <header id="top-bar">
+      <div id="logo-area">
+        <span class="logo-symbol">⬡</span>
+        <span class="logo-text">AlphaSwarm</span>
+        <span class="logo-sub">OP-CON</span>
+      </div>
+      <div id="top-bar-center">
+        <!-- Search / Command Palette Trigger -->
+        <button id="btn-open-palette" class="palette-trigger" title="Open Command Palette (Cmd+K)">
+          <span class="search-icon">🔍</span> Search or run command... <kbd>⌘K</kbd>
+        </button>
+      </div>
+      <div id="header-actions">
+        <!-- Moved global actions to the Command Palette or kept here compactly -->
+        <button id="btn-playback" class="ctrl-btn" title="Play back mock event log">▶ Play</button>
+        <button id="btn-debug-trigger" class="ctrl-btn" style="display:none;">🧪 Trigger</button>
+        <button id="btn-reset" class="ctrl-btn" title="Reset visualization">↺ Reset</button>
+      </div>
+    </header>
+    
+    <!-- MAIN CONTENT AREA -->
+    <div id="main-area">
+      
+      <!-- LEFT ACTIVITY RAIL -->
+      <nav id="activity-rail">
+        <div class="rail-item active" data-target="left-sidebar" title="System View">🏢</div>
+        <div class="rail-item" title="Agents">🤖</div>
+        <div class="rail-item" title="Settings">⚙️</div>
+        <div class="rail-spacer"></div>
+        <div class="rail-item toggle-btn" data-panel="bottom-terminal" title="Toggle Terminal">💻</div>
+      </nav>
+      
+      <!-- LEFT SIDEBAR -->
+      <aside id="left-sidebar" class="sidebar collapsed">
+        <div class="sidebar-header">
+          <span>SYSTEM EXPLORER</span>
+          <button class="close-sidebar-btn" data-panel="left-sidebar">✕</button>
+        </div>
+        <div class="sidebar-content">
+          <ul class="tree-view">
+            <li>▾ Agents
+              <ul>
+                <li>Market Agent</li>
+                <li>Volatility Agent</li>
+                <li>Options Agent</li>
+                <li>Portfolio Agent</li>
+              </ul>
+            </li>
+            <li>▾ Supervisors
+              <ul>
+                <li>Strategist</li>
+                <li>Mentor</li>
+              </ul>
+            </li>
+            <li>▾ Execution
+              <ul>
+                <li>Risk Engine</li>
+                <li>Execution Service</li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+      </aside>
+      
+      <!-- CENTER WORKSPACE -->
+      <main id="center-workspace">
+        <div id="workspace-tabs">
+          <div class="tab active">office-world.px</div>
+          <div class="tab">config.py</div>
+        </div>
+        
+        <div id="workspace-content">
+          <div id="scene-wrapper">
+            <div id="pixi-container"></div>
+          </div>
+        </div>
+      </main>
+      
+      <!-- RIGHT SIDEBAR (EVENTS/AGENTS) -->
+      <aside id="right-sidebar" class="sidebar">
+        <div class="sidebar-header">
+          <span>LIVE EVENTS</span>
+          <button id="btn-clear-log" title="Clear log">✕</button>
+        </div>
+        <div class="sidebar-content">
+          <ul id="event-log-list" aria-live="polite" aria-label="Event log"></ul>
+        </div>
+      </aside>
+      
+    </div>
+    
+    <!-- BOTTOM TERMINAL REGION -->
+    <section id="bottom-terminal" class="terminal-panel collapsed">
+      <div class="terminal-header">
+        <div class="terminal-tabs">
+          <div class="tab active">CYCLE DIAGNOSTICS</div>
+          <div class="tab">OUTPUT</div>
+          <div class="tab">PROBLEMS</div>
+        </div>
+        <button class="close-sidebar-btn" data-panel="bottom-terminal">✕</button>
+      </div>
+      <div class="terminal-content">
+        <div id="cycle-diagnostics">
+          <div id="status-phase">Idle</div>
+          <div id="status-mentor">Waiting for evaluation...</div>
+          <div id="legend">
+            <div class="legend-item"><span class="legend-dot" style="background:#00e5ff;"></span> Working</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#00e676;"></span> Received / Pass</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#ffab00;"></span> Correction / WAIT</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#ff1744;"></span> REJECT / FAIL</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#78909c;"></span> NO_TRADE</div>
+          </div>
+        </div>
+      </div>
+    </section>
+    
+    <!-- BOTTOM STATUS BAR -->
+    <footer id="bottom-status-bar">
+      <div class="status-left">
+        <span class="status-item"><span class="icon">✓</span> AlphaSwarm Engine Connected</span>
+        <span class="status-item"><span class="icon">🔄</span> Mock Playback Ready</span>
+      </div>
+      <div class="status-right">
+        <span class="status-item">UTF-8</span>
+        <span class="status-item">Python 3.12</span>
+        <span class="status-item">PixiJS v7</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- COMMAND PALETTE (Overlay) -->
+  <dialog id="command-palette">
+    <div class="palette-header">
+      <input type="text" id="palette-input" placeholder="Type a command or search..." autocomplete="off" />
+    </div>
+    <ul class="palette-results">
+      <li class="palette-item active" data-action="play_mock">▶ Play Mock Cycle <span class="shortcut">Ctrl+P</span></li>
+      <li class="palette-item" data-action="reset">↺ Reset Visualization <span class="shortcut">Ctrl+R</span></li>
+      <li class="palette-item" data-action="trigger">🧪 Trigger Debug Event</li>
+      <li class="palette-item" data-action="toggle_left">Toggle Left Sidebar <span class="shortcut">Ctrl+B</span></li>
+      <li class="palette-item" data-action="toggle_right">Toggle Right Sidebar <span class="shortcut">Ctrl+J</span></li>
+      <li class="palette-item" data-action="toggle_terminal">Toggle Terminal <span class="shortcut">Ctrl+`</span></li>
+    </ul>
+  </dialog>
+
+  <!-- DEPENDENCIES -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+  <script src="renderer.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
