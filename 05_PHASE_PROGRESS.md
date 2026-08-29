@@ -96,8 +96,8 @@
 **Blockers to a real filled order (in order):**
 1. **Market closed:** next Alpaca market open is Mon 2026-08-31 09:30 ET (verified via get_clock). No paper order can fill before then regardless of pipeline state.
 2. **Gemini free-tier quota exhausted (HTTP 429):** the Strategist cannot run live until the daily quota resets or billing is enabled on the Google AI Studio key.
-3. **Strategist calibration (root cause of prior NO_TRADEs):** on every live snapshot the Strategist treats "IV expensive vs realized" as a reason NOT to trade. For vertical CREDIT spreads, IV > realized is favorable (selling overpriced premium). Needs a one-line prompt calibration in `agents/strategist.py` clarifying the credit-seller's perspective, then a re-run at Monday's open.
+3. **Strategist calibration (root cause of prior NO_TRADEs):** FIXED 2026-08-29 — added explicit credit-seller IV interpretation to `agents/strategist.py` SYSTEM_PROMPT (IV expensive vs realized is FAVORABLE for selling credit; "expensive IV" must never appear in reasons_not_to_trade by itself). **PENDING LIVE VALIDATION** — Gemini quota was exhausted at time of edit (HTTP 429), so the recalibrated prompt has not yet been exercised end-to-end. Validate in Monday's 09:30 ET run.
 
-**To unblock Monday:** fix blocker 3, wait for quota reset (blocker 2), run `Orchestrator().run_cycle()` shortly after 09:30 ET (blocker 1), confirm Mentor APPROVE -> Risk PASS -> SUBMITTED -> filled.
+**To unblock Monday:** wait for quota reset (blocker 2), run `Orchestrator().run_cycle()` shortly after 09:30 ET (blocker 1) with the recalibrated Strategist (blocker 3 fixed, pending validation), confirm Mentor APPROVE -> Risk PASS -> SUBMITTED -> filled.
 
 **Confidence in Day-4 demo readiness:** High — the full pipeline incl. Mentor loop, correction cap, and execution path is built and individually verified; only the last-mile live fill is pending market hours.

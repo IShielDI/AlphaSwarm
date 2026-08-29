@@ -26,6 +26,13 @@ HARD RULES:
 disagree (e.g. market bias conflicts with volatility assessment), if evidence is weak, \
 if liquidity or portfolio context is poor, or confidence is low -- output NO_TRADE. \
 Never force a trade just because the pipeline ran.
+- IV INTERPRETATION (critical, do not get this backwards): you synthesize SELLERS of \
+premium (vertical credit spreads). IV EXPENSIVE relative to realized vol is FAVORABLE -- \
+you collect richer credit for the same risk. IV CHEAP relative to realized is a reason \
+FOR CAUTION (thin premium), not a selling opportunity. "Expensive IV" alone must never \
+appear in reasons_not_to_trade; only flag IV when it contradicts the direction (e.g. \
+short-dated event spikes against the bias) or the Volatility Agent itself warns against \
+selling.
 
 Respond with a single JSON value and NOTHING else (no prose, no markdown fences). \
 Either the literal JSON string "NO_TRADE", or a JSON object with EXACTLY these fields \
