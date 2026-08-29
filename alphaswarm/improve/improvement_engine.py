@@ -8,19 +8,40 @@ reviewer to state that caveat.
 
 Flow: imperfection_log.per_agent_summary() -> one hypothesis (deterministic
 selection: strongest signal in the log, not an LLM guess) -> Mentor reviews
-accept/reject under the HYPOTHESIS_REVIEW_SCHEMA.
+accept/reject under the HYPOTHESIS_REVIEW_SCHEMA -> version record appended to
+versions.jsonl (ACCEPTED or REJECTED, with config_snapshot + previous_version
+for rollback -- reading the prior entry is sufficient to revert, no separate
+infrastructure needed).
+
+Version records are part of the auditable history: accepted hypotheses are
+promoted, rejected ones are logged with "REJECTED" and the reason.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from ..agents.llm_client import run_structured_agent
 from ..agents.mentor import Mentor
 from . import imperfection_log
 
 logger = logging.getLogger(__name__)
+
+# versions.jsonl lives at the project root, alongside imperfections_log.jsonl
+# and decisions.jsonl (path resolution matches imperfection_log.LOG_PATH).
+VERSIONS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    os.pardir, "versions.jsonl"
+)
+
+
+def _now() -> str:
+    """UTC timestamp, seconds precision (mirrors imperfection_log._now)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 REVIEW_SYSTEM_PROMPT = """You are the Mentor reviewing ONE improvement hypothesis \
 proposed by the Improvement Engine. You did not generate it; your job is to judge \
@@ -97,11 +118,130 @@ def review_hypothesis(hypothesis: Dict[str, Any], model: str | None = None) -> D
     )
 
 
+# ---------------------------------------------------------------------------
+# Version recording (auditable history of accepted/rejected hypotheses)
+# ---------------------------------------------------------------------------
+
+
+def load_versions(path: str | None = None) -> List[Dict[str, Any]]:
+    """Load all version records from the JSONL file (empty list if missing)."""
+    p = path or VERSIONS_PATH
+    if not os.path.exists(p):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def _next_version_number(path: str | None = None) -> int:
+    """Return the next version number by reading the last record."""
+    records = load_versions(path)
+    if not records:
+        return 1
+    return max(r["version"] for r in records) + 1
+
+
+def record_version(
+    hypothesis: Dict[str, Any],
+    review: Dict[str, Any],
+    path: str | None = None,
+) -> Dict[str, Any]:
+    """Append a version record to versions.jsonl after Mentor review.
+
+    Handles both accept and reject verdicts:
+      - accept -> promotion_decision "ACCEPTED"
+      - reject -> promotion_decision "REJECTED"
+
+    Each record includes:
+      - version: next integer (increment from last record)
+      - timestamp
+      - promotion_decision: ACCEPTED | REJECTED
+      - change_description: the proposed change (hypothesis.proposed_action)
+      - triggering_imperfection: which recurring imperfection triggered it
+        (hypothesis evidence weak_areas)
+      - agent: the agent whose weakness triggered the hypothesis
+      - mentor_notes: reasoning, conditions, sample_size_caveat
+      - hypothesis: the full hypothesis dict
+      - review: the full Mentor review dict
+      - config_snapshot: relevant config/prompt text for THIS version
+      - previous_version: snapshot of the prior record's config_snapshot
+        (for rollback -- reading the prior entry is sufficient to revert;
+        null when this is the first version)
+
+    Rejected experiments are part of the auditable history -- they are logged
+    with promotion_decision "REJECTED" and the reason, per the original design.
+    """
+    version_num = _next_version_number(path)
+    records = load_versions(path)
+    previous_version: Optional[Dict[str, Any]] = None
+    if records:
+        prev = records[-1]
+        previous_version = {
+            "version": prev["version"],
+            "config_snapshot": prev.get("config_snapshot", {}),
+        }
+
+    verdict = (review.get("verdict") or "").strip().lower()
+    if verdict == "accept":
+        promotion_decision = "ACCEPTED"
+    elif verdict == "reject":
+        promotion_decision = "REJECTED"
+    else:
+        promotion_decision = verdict.upper() if verdict else "UNKNOWN"
+
+    evidence = hypothesis.get("evidence", {})
+    change_description = hypothesis.get("proposed_action", "")
+    triggering_imperfection = evidence.get("weak_areas", [])
+
+    config_snapshot = {
+        "review_system_prompt": REVIEW_SYSTEM_PROMPT,
+        "proposed_action": change_description,
+        "hypothesis_text": hypothesis.get("hypothesis", ""),
+        "agent": hypothesis.get("agent", ""),
+    }
+
+    record: Dict[str, Any] = {
+        "version": version_num,
+        "timestamp": _now(),
+        "promotion_decision": promotion_decision,
+        "change_description": change_description,
+        "triggering_imperfection": triggering_imperfection,
+        "agent": hypothesis.get("agent", ""),
+        "mentor_notes": {
+            "reasoning": review.get("reasoning", ""),
+            "conditions": review.get("conditions", []),
+            "sample_size_caveat": review.get("sample_size_caveat", ""),
+        },
+        "hypothesis": hypothesis,
+        "review": review,
+        "config_snapshot": config_snapshot,
+        "previous_version": previous_version,
+    }
+
+    p = path or VERSIONS_PATH
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+    logger.info(
+        "version record %d written to %s (decision=%s)",
+        version_num, p, promotion_decision,
+    )
+    return record
+
+
 def run_cycle(path: str | None = None) -> Dict[str, Any] | None:
-    """Full demo cycle: log -> one hypothesis -> Mentor review."""
+    """Full demo cycle: log -> one hypothesis -> Mentor review -> version record."""
     hyp = generate_hypothesis(path)
     if hyp is None:
         logger.warning("imperfection log has no signal; skipping cycle")
         return None
     review = review_hypothesis(hyp)
-    return {"hypothesis": hyp, "mentor_review": review}
+    version_rec = record_version(hyp, review)
+    return {
+        "hypothesis": hyp,
+        "mentor_review": review,
+        "version_record": version_rec,
+    }

@@ -162,7 +162,8 @@ class OptionsAgent:
         self._mcp = mcp or MCPDataClient()
         self._model = model
 
-    def analyze(self, ticker: str, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def analyze(self, ticker: str, context: Dict[str, Any] | None = None,
+                past_context: str = "") -> Dict[str, Any]:
         surface = build_surface(self._mcp, ticker)
         ctx = context or {}
         user = (
@@ -172,6 +173,8 @@ class OptionsAgent:
             "context, using only strikes/symbols from the surface with real bid/ask numbers. "
             "Return only the JSON object with the exact required fields."
         )
+        if past_context:
+            user += f"\n\n{past_context}"
         return run_structured_agent(
             "options_agent", SYSTEM_PROMPT, user, self._model,
             semantic_validator=_semantic_validate,

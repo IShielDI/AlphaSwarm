@@ -8,7 +8,8 @@ Flow (Agent Rules Section 3.3, TRD Section 4):
         respecting invalidate_downstream]
     -> Mentor re-audit
     -> APPROVE ? Risk Engine (deterministic, no-LLM)
-    -> PASS ? Execution Service (atomic mleg order, Alpaca paper)
+    -> PASS ? [optional HUMAN_GATE soft checkpoint (Phase 5.1)] Execution
+       Service (atomic mleg order, Alpaca paper)
     -> Position Monitor (separate scheduled process)
 
 HARD CAP: exactly ONE revision round. If the re-audit is not APPROVE,
@@ -27,14 +28,31 @@ from .agents.market_agent import MarketAgent
 from .agents.mentor import Mentor
 from .agents.options_agent import OptionsAgent
 from .agents.portfolio_agent import PortfolioAgent
-from .agents.strategist import Strategist
+from .agents.strategist import (
+    ConservativeStrategist,
+    Strategist,
+    arbitrate_proposals,
+)
 from .agents.volatility_agent import VolatilityAgent
 from .data.alpaca_client import AlpacaClient
 from .decision_store import record_cycle
 from .engine.execution_service import ExecutionService
 from .engine.risk_engine import RiskEngine, SpreadTrade
+from .improve.retrieval import retrieve_for_agent
 
 logger = logging.getLogger(__name__)
+
+
+class HumanRejectedError(RuntimeError):
+    """Raised by the optional human approval gate (HUMAN_GATE=True) when a
+    human declines an order AFTER the Risk Engine passed.
+
+    The orchestrator treats this exactly like a Mentor REJECT for the rest of
+    the cycle: no order is submitted, no retry within the same cycle, and the
+    cycle records final=NO_TRADE. The Risk Engine is untouched -- the gate is
+    a soft checkpoint layered after it, never a bypass or substitute.
+    """
+
 
 # Ownership routing map (Agent Rules Section 1 table).
 # owner -> (layer1 order index, downstream agents that consume its output).
@@ -56,6 +74,7 @@ class Orchestrator:
         self.options = OptionsAgent()
         self.portfolio = PortfolioAgent()
         self.strategist = Strategist()
+        self.conservative_strategist = ConservativeStrategist()
         self.mentor = Mentor()
         self.risk_engine = RiskEngine()
         self.execution = ExecutionService()
@@ -65,8 +84,20 @@ class Orchestrator:
     # Layer 1
     # ------------------------------------------------------------------
     def _run_layer1(self, ticker: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        market = self.market.analyze(ticker)
-        vol = self.vol.analyze(ticker)
+        # Market and Volatility agents run first; at this point we only have
+        # the ticker for retrieval (regime tags are their OUTPUT).
+        mkt_ctx = retrieve_for_agent("market_agent", ticker=ticker)
+        vol_ctx = retrieve_for_agent("volatility_agent", ticker=ticker)
+
+        market = self.market.analyze(ticker, past_context=mkt_ctx)
+        vol = self.vol.analyze(ticker, past_context=vol_ctx)
+
+        # Now that regime tags are known, Options gets richer retrieval.
+        opts_ctx = retrieve_for_agent(
+            "options_agent", ticker=ticker,
+            market_regime=market.get("market_regime"),
+            volatility_regime=vol.get("volatility_regime"),
+        )
         options = self.options.analyze(
             ticker,
             context={
@@ -75,6 +106,7 @@ class Orchestrator:
                 "volatility_regime": vol["volatility_regime"],
                 "iv_assessment": vol["iv_assessment"],
             },
+            past_context=opts_ctx,
         )
         portfolio = self.portfolio.analyze(
             ticker,
@@ -146,10 +178,32 @@ class Orchestrator:
         trace["correction_rerun"] = [k for k, v in rerun.items() if v]
 
         # The strategist always re-synthesizes with Mentor feedback included.
-        new_proposal = self.strategist.synthesize(
-            ticker, l1[0], l1[1], l1[2], l1[3],
-            mentor_feedback=audit,
+        strat_ctx = retrieve_for_agent(
+            "strategist", ticker=ticker,
+            market_regime=l1[0].get("market_regime"),
+            volatility_regime=l1[1].get("volatility_regime"),
         )
+        if config.ENABLE_DUAL_STRATEGIST:
+            p1 = self.strategist.synthesize(
+                ticker, l1[0], l1[1], l1[2], l1[3],
+                mentor_feedback=audit, past_context=strat_ctx,
+            )
+            p2 = self.conservative_strategist.synthesize(
+                ticker, l1[0], l1[1], l1[2], l1[3],
+                mentor_feedback=audit, past_context=strat_ctx,
+            )
+            new_proposal, arb_meta = arbitrate_proposals(p1, p2)
+            trace["correction_dual_strategist"] = {
+                "primary_proposal": p1,
+                "secondary_proposal": p2,
+                "arbitration": arb_meta,
+            }
+        else:
+            new_proposal = self.strategist.synthesize(
+                ticker, l1[0], l1[1], l1[2], l1[3],
+                mentor_feedback=audit,
+                past_context=strat_ctx,
+            )
         return l1, new_proposal
 
     # ------------------------------------------------------------------
@@ -170,6 +224,50 @@ class Orchestrator:
             long_symbol=c["long_leg"]["symbol"],
         )
 
+    def _human_gate(self, proposal: Dict[str, Any], trace: Dict[str, Any]) -> bool:
+        """Optional soft checkpoint AFTER the Risk Engine passes (Phase 5.1).
+
+        Prints a decision summary and blocks on a y/n prompt. Returns True to
+        proceed to the Execution Service (same as the no-gate path), or False
+        to abort this cycle exactly like a Mentor REJECT (no order, no retry
+        within this cycle). Records the human_gate decision in `trace`.
+        """
+        contract = proposal.get("contract") or {}
+        audit = trace.get("mentor_audit_v2") or trace.get("mentor_audit_v1") or {}
+        imperfections = audit.get("imperfections") or []
+        print("\n" + "=" * 64)
+        print("HUMAN APPROVAL GATE  --  Risk Engine PASSED")
+        print("=" * 64)
+        print(f"Underlying           : {proposal.get('underlying')}")
+        print(f"Selected structure   : {proposal.get('selected_structure')}")
+        print("Contract             : "
+              f"short {contract.get('short_leg', {}).get('symbol')} / "
+              f"long {contract.get('long_leg', {}).get('symbol')}  "
+              f"(exp {contract.get('expiration')})")
+        print(f"Entry conditions     : {proposal.get('entry_conditions')}")
+        print(f"Exit conditions      : {proposal.get('exit_conditions')}")
+        print(f"Max loss             : ${proposal.get('max_loss')}")
+        print(f"Mentor decision      : {audit.get('overall_decision')}")
+        if imperfections:
+            print("Mentor imperfections (last audit pass):")
+            for imp in imperfections:
+                print(f"  - [{imp.get('severity')}] {imp.get('component')} "
+                      f"(owner={imp.get('owner')}): {imp.get('reason')}")
+        else:
+            print("Mentor imperfections (last audit pass): none")
+        while True:
+            answer = input("Submit this order? (y/n): ").strip().lower()
+            if answer in ("y", "n"):
+                break
+            print("Please enter 'y' or 'n'.")
+        approved = answer == "y"
+        trace["human_gate"] = {
+            "enabled": True,
+            "decision": "approved" if approved else "rejected",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        return approved
+
     def _execute(self, proposal: Dict[str, Any], trace: Dict[str, Any]) -> Dict[str, Any]:
         trade = self._to_trade(proposal)
         account = self.alpaca.get_account_summary()
@@ -183,6 +281,12 @@ class Orchestrator:
         if not risk.passed:
             logger.warning("risk engine FAIL: %s", risk.failed_checks)
             return {"status": "RISK_FAIL", "detail": risk.failed_checks}
+
+        # Optional human approval gate: strictly BETWEEN the Risk Engine PASS
+        # and Execution Service submission. The Risk Engine is the sole hard
+        # deterministic boundary; this is an additional soft checkpoint.
+        if config.HUMAN_GATE and not self._human_gate(proposal, trace):
+            raise HumanRejectedError("human gate declined at risk-pass checkpoint")
 
         builder = (
             self.execution.build_bull_put_spread
@@ -220,7 +324,31 @@ class Orchestrator:
         l1, _ = self._run_layer1(ticker)
         trace["layer1"] = dict(zip(_LAYER_ORDER, l1))
 
-        proposal = self.strategist.synthesize(ticker, l1[0], l1[1], l1[2], l1[3])
+        # Strategist gets full-tag retrieval (regime tags now known from L1).
+        strat_ctx = retrieve_for_agent(
+            "strategist", ticker=ticker,
+            market_regime=l1[0].get("market_regime"),
+            volatility_regime=l1[1].get("volatility_regime"),
+        )
+
+        if config.ENABLE_DUAL_STRATEGIST:
+            p1 = self.strategist.synthesize(
+                ticker, l1[0], l1[1], l1[2], l1[3], past_context=strat_ctx,
+            )
+            p2 = self.conservative_strategist.synthesize(
+                ticker, l1[0], l1[1], l1[2], l1[3], past_context=strat_ctx,
+            )
+            proposal, arb_meta = arbitrate_proposals(p1, p2)
+            trace["dual_strategist"] = {
+                "enabled": True,
+                "primary_proposal": p1,
+                "secondary_proposal": p2,
+                "arbitration": arb_meta,
+            }
+        else:
+            proposal = self.strategist.synthesize(
+                ticker, l1[0], l1[1], l1[2], l1[3], past_context=strat_ctx,
+            )
         if proposal == "NO_TRADE":
             trace["final"] = "NO_TRADE"
             trace["reason"] = "strategist returned NO_TRADE on first synthesis"
@@ -261,6 +389,19 @@ class Orchestrator:
 
         try:
             trace["execution"] = self._execute(proposal, trace)
+        except HumanRejectedError as e:
+            # Human declined at the risk-pass checkpoint: end this cycle exactly
+            # like a Mentor REJECT -- NO_TRADE, no order submitted, no retry
+            # within the same cycle.
+            logger.warning("human gate: %s", e)
+            trace["execution"] = {"status": "REJECTED_BY_HUMAN", "detail": str(e)}
+            trace["final"] = "NO_TRADE"
+            trace["reason"] = (
+                "human gate declined after risk passed "
+                "(mentor REJECT-equivalent; no order, no retry)"
+            )
+            record_cycle(trace)
+            return trace
         except Exception as e:  # execution must never crash the trace
             logger.exception("execution error")
             trace["execution"] = {"status": "ERROR", "detail": f"{type(e).__name__}: {e}"}

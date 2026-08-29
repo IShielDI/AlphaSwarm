@@ -40,8 +40,26 @@ MODEL_QWEN3_CODER = "qwen/qwen3-coder"
 MODEL_GLM45_AIR = "z-ai/glm-4.5-air"
 MODEL_NEMOTRON = "nvidia/nemotron-3-super-120b-a12b"  # Mentor (TRD Section 2, locked)
 MODEL_GEMINI_FLASH = "gemini-3.6-flash"  # 2.5-flash is 404 for new keys (Aug 2026)
+# Strategist fallback (Google AI Studio free-tier quota exhausts fast; on a
+# 429 we retry the SAME role via OpenRouter, which has a separate quota pool).
+MODEL_STRATEGIST_FALLBACK = "google/gemini-3.6-flash"  # via OpenRouter
+# Gemini thinking budgets (3.6-flash is a thinking model; thoughts count
+# toward maxOutputTokens). Low budget trades depth of deliberation for
+# latency -- re-validate output quality whenever this changes.
+GEMINI_THINKING_BUDGET = 1024
+# OpenRouter reasoning effort for the Mentor. "low" cut the audit latency
+# substantially; the standalone 4-case Mentor test must still pass before
+# relying on this (scripts/day3_mentor_test.py).
+MENTOR_REASONING_EFFORT = "low"
 
 MAX_SCHEMA_ATTEMPTS = 2  # Agent Rules Section 5: halt after 2 consecutive failures
+
+# _google_quota_exhausted latches for the life of the process: once the
+# Google free-tier quota is confirmed exhausted we stay on the OpenRouter
+# fallback for the rest of this run, deliberately NOT flapping back and forth
+# on transient per-minute limits. Intentional -- do not add a reset or expiry
+# to this flag; it is meant to be sticky per process (Task 1 issue 3).
+_google_quota_exhausted = False
 
 
 class AgentSchemaError(RuntimeError):
@@ -62,6 +80,21 @@ class AgentSchemaError(RuntimeError):
 
 class LLMError(RuntimeError):
     """HTTP / transport-level failure talking to a provider."""
+
+
+class StructuredOutputUnsupportedError(RuntimeError):
+    """Raised when a provider cannot honor the requested structured-output
+    mode (forced JSON response / responseMimeType).
+
+    This is a capability fact, NOT a content-quality failure, so it must not
+    consume the schema/content retry budget (Task 1 issue 2).
+    """
+
+
+def _is_quota_error(e: LLMError) -> bool:
+    """True for provider rate-limit / quota-exhaustion errors (HTTP 429)."""
+    msg = str(e)
+    return "429" in msg or "quota" in msg.lower() or "rate limit" in msg.lower()
 
 
 def extract_json(text: str) -> Any:
@@ -146,6 +179,7 @@ def run_structured_agent(
     semantic_validator: Optional[Callable[[Any], List[str]]] = None,
     max_attempts: int = MAX_SCHEMA_ATTEMPTS,
     temperature: float = 0.2,
+    reasoning_effort: Optional[str] = None,
 ) -> Any:
     """Call the model, extract JSON, and validate against the locked schema.
 
@@ -154,21 +188,73 @@ def run_structured_agent(
     halt the decision cycle. A `semantic_validator` may add checks beyond
     field presence (e.g. enum membership, structure limits); its errors
     count toward the same retry budget.
+
+    `reasoning_effort` ("low"/"medium"/"high") is forwarded to providers
+    that expose reasoning control (OpenRouter `reasoning.effort`; Gemini
+    maps it to a thinkingConfig budget).
+
+    Strategist-only 429 fallback: Google AI Studio's free-tier quota
+    exhausts quickly. If the Gemini transport returns a 429/quota error,
+    the remaining attempts automatically run the SAME role through
+    OpenRouter with MODEL_STRATEGIST_FALLBACK (separate quota pool).
     """
+    global _google_quota_exhausted
     errors_per_attempt: List[List[str]] = []
-    for attempt in range(1, max_attempts + 1):
+    # effective_* track the provider/model ACTUALLY used this attempt, which
+    # may differ from the original `provider` once the Google fallback kicks
+    # in. Branching on these (not the original arg) is the Task 1 issue 1 fix.
+    effective_provider = provider
+    effective_model = model
+    capability_topup_done = False  # one extra attempt for capability facts only
+    attempt = 0
+    while attempt < max_attempts:
+        attempt += 1
         try:
-            if provider == "openrouter":
+            if effective_provider == "openrouter":
                 raw = _CHAT.run(
-                    _openrouter_chat, model, system_prompt, user_prompt, temperature
+                    _openrouter_chat, effective_model, system_prompt, user_prompt, temperature
                 )
             else:
                 raw = _CHAT.run(
-                    _gemini_chat, model, system_prompt, user_prompt, temperature
+                    _gemini_chat, effective_model, system_prompt, user_prompt, temperature
                 )
+        except StructuredOutputUnsupportedError as e:
+            # Capability fact, not a content/schema quality failure: grant ONE
+            # extra attempt for this provider->prompt-only transition instead
+            # of spending the shared retry budget (Task 1 issue 2).
+            if not capability_topup_done:
+                capability_topup_done = True
+                max_attempts += 1
+            errors_per_attempt.append([f"structured output unsupported: {e}"])
+            logger.warning(
+                "%s attempt %d structured output unsupported: %s", agent, attempt, e
+            )
+            continue
         except LLMError as e:
             errors_per_attempt.append([f"transport error: {e}"])
             logger.warning("%s attempt %d transport error: %s", agent, attempt, e)
+            if effective_provider == "google" and _is_quota_error(e):
+                # Google free-tier quota exhausted: switch this role to the
+                # OpenRouter fallback (separate quota pool) for the remainder.
+                logger.warning(
+                    "%s: Gemini 429 -- switching to OpenRouter fallback", agent
+                )
+                effective_provider = "openrouter"
+                effective_model = MODEL_STRATEGIST_FALLBACK
+                _google_quota_exhausted = True
+            elif (
+                effective_provider == "openrouter"
+                and _google_quota_exhausted
+                and _is_quota_error(e)
+            ):
+                # Already on the fallback and OpenRouter itself is rate-limited:
+                # log it distinctly for later diagnosis. Do NOT re-trigger the
+                # Google fallback (it is already active) -- the normal transport
+                # error above already records this attempt.
+                logger.warning(
+                    "OpenRouter fallback rate-limited for %s (attempt %d): %s",
+                    agent, attempt, e,
+                )
             continue
         try:
             output = extract_json(raw)
@@ -321,7 +407,16 @@ def _gemini_chat(model: str, system_prompt: str, user_prompt: str, temperature: 
     except requests.RequestException as e:
         raise LLMError(f"Gemini transport failure: {e}") from e
     if resp.status_code != 200:
-        raise LLMError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
+        body = resp.text[:300]
+        if resp.status_code == 400 and (
+            "responseMimeType" in body
+            or "structured output" in body.lower()
+            or "not supported" in body.lower()
+        ):
+            # Gemini refused the forced-JSON (responseMimeType) mode -- a
+            # capability limitation, not malformed content (Task 1 issue 2).
+            raise StructuredOutputUnsupportedError(f"Gemini structured output unsupported: {body}")
+        raise LLMError(f"Gemini HTTP {resp.status_code}: {body}")
     data = resp.json()
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]

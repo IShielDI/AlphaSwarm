@@ -80,7 +80,7 @@ class MarketAgent:
         self._mcp = mcp or MCPDataClient()
         self._model = model
 
-    def analyze(self, ticker: str) -> Dict[str, Any]:
+    def analyze(self, ticker: str, past_context: str = "") -> Dict[str, Any]:
         snap = build_snapshot(self._mcp, ticker)
         user = (
             "Current market data snapshot for one underlying:\n"
@@ -89,4 +89,6 @@ class MarketAgent:
             "numbers above (name them explicitly in the evidence strings). Return only "
             "the JSON object with the exact required fields."
         )
+        if past_context:
+            user += f"\n\n{past_context}"
         return run_structured_agent("market_agent", SYSTEM_PROMPT, user, self._model)

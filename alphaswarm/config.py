@@ -81,3 +81,22 @@ MAX_CONCENTRATION_PER_UNDERLYING_PCT = 0.25
 
 # Hard cap on contracts for one spread leg (sanity guard).
 MAX_CONTRACTS_PER_LEG = 100
+
+# ---------------------------------------------------------------------------
+# Optional human approval gate (Phase 5.1). Default OFF -- the hackathon
+# requires autonomous execution as the primary mode; this gate is an optional,
+# demonstrable safety layer, not a replacement for autonomy. When True, the
+# orchestrator pauses AFTER the Risk Engine passes and asks a human to approve
+# the order before submitting it. The gate is an additional SOFT checkpoint
+# layered after the Risk Engine -- it is never a bypass of, or substitute for,
+# the deterministic Risk Engine boundary.
+# ---------------------------------------------------------------------------
+HUMAN_GATE = False
+
+# ---------------------------------------------------------------------------
+# Dual Strategist parallel synthesis & arbitration (default OFF).
+# When True, runs a primary and conservative strategist in parallel,
+# arbitrating agreement before feeding the Mentor.
+# ---------------------------------------------------------------------------
+ENABLE_DUAL_STRATEGIST = False
+

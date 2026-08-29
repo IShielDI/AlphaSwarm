@@ -71,6 +71,14 @@ class AlpacaClient:
         """All open positions (raw)."""
         return self.trading.get_all_positions()
 
+    def get_orders(self, status: str = "open"):
+        """All orders for given status ('open', 'closed', 'all')."""
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+        st = QueryOrderStatus(status) if status in ("open", "closed", "all") else QueryOrderStatus.OPEN
+        req = GetOrdersRequest(status=st)
+        return self.trading.get_orders(req)
+
     def get_account_summary(self) -> dict:
         """Compact account summary (equity, buying power, cash)."""
         acc = self.get_account()

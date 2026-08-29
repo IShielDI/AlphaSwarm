@@ -106,7 +106,7 @@ class VolatilityAgent:
         self._mcp = mcp or MCPDataClient()
         self._model = model
 
-    def analyze(self, ticker: str) -> Dict[str, Any]:
+    def analyze(self, ticker: str, past_context: str = "") -> Dict[str, Any]:
         snap = build_snapshot(self._mcp, ticker)
         user = (
             "Current volatility data snapshot for one underlying:\n"
@@ -116,4 +116,6 @@ class VolatilityAgent:
             "from the snapshot in the evidence strings. Return only the JSON object with "
             "the exact required fields."
         )
+        if past_context:
+            user += f"\n\n{past_context}"
         return run_structured_agent("volatility_agent", SYSTEM_PROMPT, user, self._model)

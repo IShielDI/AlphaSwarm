@@ -136,6 +136,10 @@ def step_improvement_loop(skip_llm: bool) -> None:
     print("\nsending to Mentor (Nemotron) for review...")
     review = improvement_engine.review_hypothesis(hyp)
     print(json.dumps(review, indent=2))
+    version_rec = improvement_engine.record_version(hyp, review)
+    print("\nversion record written to versions.jsonl:")
+    print(json.dumps(version_rec, indent=2))
+    print(f"\n  (promotion_decision: {version_rec['promotion_decision']})")
     print("\nNOTE: mechanism demo only -- sample size does not support "
           "treating this as a validated improvement.")
 
